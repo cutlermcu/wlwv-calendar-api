@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "name": "wlwv-calendar-api",
   "builds": [
     {
       "src": "server.js",
@@ -14,5 +15,10 @@
   ],
   "env": {
     "NODE_ENV": "production"
+  },
+  "functions": {
+    "server.js": {
+      "maxDuration": 30
+    }
   }
 }
