@@ -10,11 +10,11 @@ const PORT = process.env.PORT || 3000;
 // Production-ready middleware - UPDATED CORS CONFIGURATION
 app.use(cors({
     origin: process.env.NODE_ENV === 'production' ? [
-        'https://www.wlwvlife.org',           // ✅ Add your actual domain
-        'https://wlwvlife.org',              // ✅ Add without www too
-        'https://wlwv-calendar.vercel.app',  // Your original Vercel domain
-        /\.vercel\.app$/,                    // Any Vercel app domains
-        /\.wlwvlife\.org$/                   // Any subdomain of your domain
+        'https://www.wlwvlife.org',  // Your frontend domain
+        'https://wlwv-calendar.vercel.app',  // If you have another frontend URL
+        /\.vercel\.app$/,
+        'http://localhost:3000',  // For local testing
+        'http://127.0.0.1:3000'   // Alternative localhost
     ] : true,
     credentials: true
 }));
