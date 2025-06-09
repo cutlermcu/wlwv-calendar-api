@@ -7,12 +7,14 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Production-ready middleware
+// Production-ready middleware - UPDATED CORS CONFIGURATION
 app.use(cors({
     origin: process.env.NODE_ENV === 'production' ? [
-        'https://your-domain.com',
-        'https://wlwv-calendar.vercel.app',
-        /\.vercel\.app$/
+        'https://www.wlwvlife.org',           // ✅ Add your actual domain
+        'https://wlwvlife.org',              // ✅ Add without www too
+        'https://wlwv-calendar.vercel.app',  // Your original Vercel domain
+        /\.vercel\.app$/,                    // Any Vercel app domains
+        /\.wlwvlife\.org$/                   // Any subdomain of your domain
     ] : true,
     credentials: true
 }));
