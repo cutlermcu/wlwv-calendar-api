@@ -72,13 +72,14 @@ function formatDate(dateInput) {
 app.get('/', (req, res) => {
     res.json({
         name: 'WLWV Life Calendar API',
-        version: '2.3.0',
+        version: '2.4.0',
         status: 'running',
         environment: process.env.NODE_ENV || 'development',
         endpoints: {
             health: '/api/health',
             init: 'POST /api/init',
             daySchedules: '/api/day-schedules',
+            dateConfigs: '/api/date-configs',
             dayTypes: '/api/day-types',
             events: '/api/events',
             materials: '/api/materials'
@@ -88,7 +89,8 @@ app.get('/', (req, res) => {
             'Multi-school support',
             'A/B day scheduling',
             'Event management',
-            'Grade-level materials'
+            'Grade-level materials',
+            'Date configurations'
         ]
     });
 });
@@ -180,6 +182,18 @@ app.post('/api/init', async (req, res) => {
             )
         `);
 
+        // Date configs table (matches your existing structure)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS date_configs (
+                date_key DATE PRIMARY KEY,
+                color VARCHAR(7),
+                day_type VARCHAR(1) CHECK (day_type IN ('A', 'B')),
+                is_access BOOLEAN DEFAULT false,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
         // Events table
         await client.query(`
             CREATE TABLE IF NOT EXISTS events (
@@ -218,14 +232,15 @@ app.post('/api/init', async (req, res) => {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_materials_date ON materials(date)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_day_schedules_date ON day_schedules(date)`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_day_types_date ON day_types(date)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_date_configs_date ON date_configs(date_key)`);
 
         console.log('Database schema initialized successfully!');
         client.release();
 
         res.json({ 
             message: 'Database initialized successfully',
-            tables: ['day_schedules', 'day_types', 'events', 'materials'],
-            features: ['password-protected materials', 'multi-school support', 'performance indexes'],
+            tables: ['day_schedules', 'day_types', 'date_configs', 'events', 'materials'],
+            features: ['password-protected materials', 'multi-school support', 'A/B scheduling', 'performance indexes'],
             environment: process.env.NODE_ENV || 'development',
             timestamp: new Date().toISOString()
         });
@@ -259,48 +274,70 @@ app.post('/api/init', async (req, res) => {
     }
 });
 
-// Add password column to existing materials table
-app.post('/api/add-password-column', async (req, res) => {
+// ===== DATE CONFIGS ROUTES =====
+app.get('/api/date-configs', async (req, res) => {
     try {
         if (!pool) {
             return res.status(500).json({ error: 'Database not connected' });
         }
 
         const client = await pool.connect();
-
-        const columnCheck = await client.query(`
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'materials' AND column_name = 'password'
-        `);
-
-        if (columnCheck.rows.length > 0) {
-            client.release();
-            return res.json({ 
-                message: 'Password column already exists',
-                already_exists: true
-            });
-        }
-
-        await client.query(`ALTER TABLE materials ADD COLUMN password TEXT DEFAULT ''`);
-        console.log('Password column added to materials table');
+        const result = await client.query('SELECT date_key, color, day_type, is_access, created_at, updated_at FROM date_configs ORDER BY date_key');
         client.release();
 
-        res.json({ 
-            message: 'Password column added successfully',
-            added: true
-        });
+        const configs = result.rows.map(row => ({
+            ...row,
+            date_key: formatDate(row.date_key)
+        }));
 
+        res.json(configs);
     } catch (error) {
-        console.error('Error adding password column:', error);
-        res.status(500).json({ 
-            error: 'Failed to add password column',
-            details: error.message
-        });
+        console.error('Error fetching date configs:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Day Schedules Routes
+app.post('/api/date-configs', async (req, res) => {
+    try {
+        if (!pool) {
+            return res.status(500).json({ error: 'Database not connected' });
+        }
+
+        const { date_key, color, day_type, is_access } = req.body;
+
+        if (!date_key) {
+            return res.status(400).json({ error: 'date_key is required' });
+        }
+
+        const formattedDate = formatDate(date_key);
+        const client = await pool.connect();
+
+        await client.query(`
+            INSERT INTO date_configs (date_key, color, day_type, is_access, updated_at) 
+            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+            ON CONFLICT (date_key) 
+            DO UPDATE SET 
+                color = COALESCE($2, date_configs.color),
+                day_type = COALESCE($3, date_configs.day_type),
+                is_access = COALESCE($4, date_configs.is_access),
+                updated_at = CURRENT_TIMESTAMP
+        `, [formattedDate, color || null, day_type || null, is_access || false]);
+
+        client.release();
+        res.json({ 
+            success: true, 
+            date_key: formattedDate, 
+            color, 
+            day_type, 
+            is_access 
+        });
+    } catch (error) {
+        console.error('Error updating date config:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Day Schedules Routes (legacy support)
 app.get('/api/day-schedules', async (req, res) => {
     try {
         if (!pool) {
@@ -787,53 +824,13 @@ app.delete('/api/clear-all', async (req, res) => {
         await client.query('DELETE FROM events');
         await client.query('DELETE FROM day_schedules');
         await client.query('DELETE FROM day_types');
+        await client.query('DELETE FROM date_configs');
 
         client.release();
 
         res.json({ success: true, message: 'All data cleared' });
     } catch (error) {
         console.error('Error clearing data:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.post('/api/fix-materials-table', async (req, res) => {
-    try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
-        const client = await pool.connect();
-
-        await client.query('DROP TABLE IF EXISTS materials');
-        
-        await client.query(`
-            CREATE TABLE materials (
-                id SERIAL PRIMARY KEY,
-                school VARCHAR(10) NOT NULL CHECK (school IN ('wlhs', 'wvhs')),
-                date DATE NOT NULL,
-                grade_level INTEGER NOT NULL CHECK (grade_level BETWEEN 9 AND 12),
-                title VARCHAR(255) NOT NULL,
-                link TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                password TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-
-        await client.query(`
-            CREATE INDEX IF NOT EXISTS idx_materials_school_date_grade ON materials(school, date, grade_level)
-        `);
-
-        client.release();
-
-        res.json({ 
-            success: true, 
-            message: 'Materials table recreated with password support'
-        });
-    } catch (error) {
-        console.error('Error fixing materials table:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -871,6 +868,7 @@ const server = app.listen(PORT, () => {
     console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`💾 Database: ${pool ? 'Connected' : 'Not configured'}`);
     console.log(`🌐 Health check: /api/health`);
+    console.log(`📅 Date configs: /api/date-configs`);
 });
 
 module.exports = app;
