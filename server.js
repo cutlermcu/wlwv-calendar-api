@@ -285,10 +285,16 @@ app.get('/api/date-configs', async (req, res) => {
         const result = await client.query('SELECT date_key, color, day_type, is_access, created_at, updated_at FROM date_configs ORDER BY date_key');
         client.release();
 
-        const configs = result.rows.map(row => ({
-            ...row,
-            date_key: formatDate(row.date_key)
-        }));
+        const configs = result.rows.map(row => {
+            return {
+                date_key: formatDate(row.date_key),
+                color: row.color,
+                day_type: row.day_type,
+                is_access: row.is_access,
+                created_at: row.created_at,
+                updated_at: row.updated_at
+            };
+        });
 
         res.json(configs);
     } catch (error) {
@@ -327,9 +333,9 @@ app.post('/api/date-configs', async (req, res) => {
         res.json({ 
             success: true, 
             date_key: formattedDate, 
-            color, 
-            day_type, 
-            is_access 
+            color: color, 
+            day_type: day_type, 
+            is_access: is_access 
         });
     } catch (error) {
         console.error('Error updating date config:', error);
