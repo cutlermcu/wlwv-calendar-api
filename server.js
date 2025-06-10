@@ -354,10 +354,12 @@ app.get('/api/day-schedules', async (req, res) => {
         const result = await client.query('SELECT date, schedule FROM day_schedules ORDER BY date');
         client.release();
 
-        const schedules = result.rows.map(row => ({
-            date: formatDate(row.date),
-            schedule: row.schedule
-        }));
+        const schedules = result.rows.map(row => {
+            return {
+                date: formatDate(row.date),
+                schedule: row.schedule
+            };
+        });
 
         res.json(schedules);
     } catch (error) {
@@ -420,10 +422,12 @@ app.get('/api/day-types', async (req, res) => {
         const result = await client.query('SELECT date, type FROM day_types ORDER BY date');
         client.release();
 
-        const types = result.rows.map(row => ({
-            date: formatDate(row.date),
-            type: row.type
-        }));
+        const types = result.rows.map(row => {
+            return {
+                date: formatDate(row.date),
+                type: row.type
+            };
+        });
 
         res.json(types);
     } catch (error) {
@@ -494,10 +498,19 @@ app.get('/api/events', async (req, res) => {
         );
         client.release();
 
-        const events = result.rows.map(row => ({
-            ...row,
-            date: formatDate(row.date)
-        }));
+        const events = result.rows.map(row => {
+            return {
+                id: row.id,
+                school: row.school,
+                date: formatDate(row.date),
+                title: row.title,
+                department: row.department,
+                time: row.time,
+                description: row.description,
+                created_at: row.created_at,
+                updated_at: row.updated_at
+            };
+        });
 
         res.json(events);
     } catch (error) {
@@ -534,8 +547,15 @@ app.post('/api/events', async (req, res) => {
         client.release();
 
         const event = {
-            ...result.rows[0],
-            date: formatDate(result.rows[0].date)
+            id: result.rows[0].id,
+            school: result.rows[0].school,
+            date: formatDate(result.rows[0].date),
+            title: result.rows[0].title,
+            department: result.rows[0].department,
+            time: result.rows[0].time,
+            description: result.rows[0].description,
+            created_at: result.rows[0].created_at,
+            updated_at: result.rows[0].updated_at
         };
 
         res.json(event);
@@ -574,8 +594,15 @@ app.put('/api/events/:id', async (req, res) => {
         }
 
         const event = {
-            ...result.rows[0],
-            date: formatDate(result.rows[0].date)
+            id: result.rows[0].id,
+            school: result.rows[0].school,
+            date: formatDate(result.rows[0].date),
+            title: result.rows[0].title,
+            department: result.rows[0].department,
+            time: result.rows[0].time,
+            description: result.rows[0].description,
+            created_at: result.rows[0].created_at,
+            updated_at: result.rows[0].updated_at
         };
 
         res.json(event);
@@ -636,11 +663,20 @@ app.get('/api/materials', async (req, res) => {
             
             client.release();
 
-            const materials = result.rows.map(row => ({
-                ...row,
-                date: formatDate(row.date),
-                password: row.password || ''
-            }));
+            const materials = result.rows.map(row => {
+                return {
+                    id: row.id,
+                    school: row.school,
+                    date: formatDate(row.date),
+                    grade_level: row.grade_level,
+                    title: row.title,
+                    link: row.link,
+                    description: row.description,
+                    password: row.password || '',
+                    created_at: row.created_at,
+                    updated_at: row.updated_at
+                };
+            });
 
             res.json(materials);
         } catch (passwordError) {
@@ -652,11 +688,20 @@ app.get('/api/materials', async (req, res) => {
             
             client.release();
 
-            const materials = result.rows.map(row => ({
-                ...row,
-                date: formatDate(row.date),
-                password: ''
-            }));
+            const materials = result.rows.map(row => {
+                return {
+                    id: row.id,
+                    school: row.school,
+                    date: formatDate(row.date),
+                    grade_level: row.grade_level,
+                    title: row.title,
+                    link: row.link,
+                    description: row.description,
+                    password: '',
+                    created_at: row.created_at,
+                    updated_at: row.updated_at
+                };
+            });
 
             res.json(materials);
         }
@@ -700,8 +745,16 @@ app.post('/api/materials', async (req, res) => {
             client.release();
 
             const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date)
+                id: result.rows[0].id,
+                school: result.rows[0].school,
+                date: formatDate(result.rows[0].date),
+                grade_level: result.rows[0].grade_level,
+                title: result.rows[0].title,
+                link: result.rows[0].link,
+                description: result.rows[0].description,
+                password: result.rows[0].password,
+                created_at: result.rows[0].created_at,
+                updated_at: result.rows[0].updated_at
             };
 
             res.json(material);
@@ -716,9 +769,16 @@ app.post('/api/materials', async (req, res) => {
             client.release();
 
             const material = {
-                ...result.rows[0],
+                id: result.rows[0].id,
+                school: result.rows[0].school,
                 date: formatDate(result.rows[0].date),
-                password: ''
+                grade_level: result.rows[0].grade_level,
+                title: result.rows[0].title,
+                link: result.rows[0].link,
+                description: result.rows[0].description,
+                password: '',
+                created_at: result.rows[0].created_at,
+                updated_at: result.rows[0].updated_at
             };
 
             res.json(material);
@@ -760,8 +820,16 @@ app.put('/api/materials/:id', async (req, res) => {
             }
 
             const material = {
-                ...result.rows[0],
-                date: formatDate(result.rows[0].date)
+                id: result.rows[0].id,
+                school: result.rows[0].school,
+                date: formatDate(result.rows[0].date),
+                grade_level: result.rows[0].grade_level,
+                title: result.rows[0].title,
+                link: result.rows[0].link,
+                description: result.rows[0].description,
+                password: result.rows[0].password,
+                created_at: result.rows[0].created_at,
+                updated_at: result.rows[0].updated_at
             };
 
             res.json(material);
@@ -781,9 +849,16 @@ app.put('/api/materials/:id', async (req, res) => {
             }
 
             const material = {
-                ...result.rows[0],
+                id: result.rows[0].id,
+                school: result.rows[0].school,
                 date: formatDate(result.rows[0].date),
-                password: ''
+                grade_level: result.rows[0].grade_level,
+                title: result.rows[0].title,
+                link: result.rows[0].link,
+                description: result.rows[0].description,
+                password: '',
+                created_at: result.rows[0].created_at,
+                updated_at: result.rows[0].updated_at
             };
 
             res.json(material);
