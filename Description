@@ -1,4 +1,5 @@
 This is a calendar for a school district with two high schools, and it is comprised of a frontend (index.html) and a backend API (server.js) that is connected to a Neon database. 
+The frontend and backend are two different repositories and vercel deployments. 
 The calendars share certain attributes, such as A/B designations and 'special day' designations. Howevever, other categories (events and materials) are unique to each school. 
 Admin in admin mode (toggled on) are able to change day designations, A/B days, and CRUD events/materials. Materials can be password protected. Users are unable to add events or
 materials, but can view these features when clicking a date. 
