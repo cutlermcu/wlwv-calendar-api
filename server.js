@@ -7,7 +7,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS configuration
+// Production-ready middleware with FIXED CORS configuration
 app.use(cors({
     origin: process.env.NODE_ENV === 'production' ? [
         'https://wlwv-calendar.vercel.app',
@@ -21,9 +21,13 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Database connection
+// Serve static files
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Global database connection
 let pool = null;
 
+// Initialize database connection pool
 function initializePool(dbUrl = null) {
     const connectionString = dbUrl || process.env.DATABASE_URL;
     
@@ -42,25 +46,42 @@ function initializePool(dbUrl = null) {
     });
 }
 
-// Auto-initialize pool
-if (process.env.DATABASE_URL) {
-    pool = initializePool();
+// Helper function to ensure pool exists and is valid
+function ensurePoolExists() {
+    if (!pool || pool.ended) {
+        if (process.env.DATABASE_URL) {
+            pool = initializePool();
+            console.log('Database pool (re)created');
+        } else {
+            throw new Error('No database URL available');
+        }
+    }
+    return pool;
 }
 
-// Helper function
+// Auto-initialize pool if DATABASE_URL is available
+if (process.env.DATABASE_URL) {
+    pool = initializePool();
+    console.log('Database pool initialized from environment variable');
+}
+
+// Helper function to format dates consistently
 function formatDate(dateInput) {
     if (!dateInput) return null;
+
     if (dateInput instanceof Date) {
         return dateInput.toISOString().split('T')[0];
     }
+
     const date = new Date(dateInput);
     if (isNaN(date.getTime())) {
         throw new Error('Invalid date format');
     }
+
     return date.toISOString().split('T')[0];
 }
 
-// Root route
+// Root route - API info
 app.get('/', (req, res) => {
     res.json({
         name: 'WLWV Life Calendar API',
@@ -70,66 +91,95 @@ app.get('/', (req, res) => {
         endpoints: {
             health: '/api/health',
             init: 'POST /api/init',
-            dateConfigs: '/api/date-configs',
+            daySchedules: '/api/day-schedules',
+            dayTypes: '/api/day-types',
             events: '/api/events',
             materials: '/api/materials'
-        }
+        },
+        features: [
+            'Password-protected materials',
+            'Multi-school support',
+            'A/B day scheduling',
+            'Event management',
+            'Grade-level materials',
+            'Auto-reconnecting database pool'
+        ]
     });
 });
 
-// Health check
+// Serve the main application
+app.get('/app', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Health check endpoint with pool recovery
 app.get('/api/health', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ 
-                error: 'Database not configured',
-                connected: false
-            });
-        }
-
-        const client = await pool.connect();
-        const result = await client.query('SELECT NOW() as timestamp');
+        const activePool = ensurePoolExists();
+        const client = await activePool.connect();
+        const result = await client.query('SELECT NOW() as timestamp, version() as db_version');
         client.release();
 
         res.json({ 
             status: 'healthy', 
+            message: 'Database connected',
             connected: true,
-            timestamp: result.rows[0].timestamp
+            timestamp: result.rows[0].timestamp,
+            database: 'PostgreSQL',
+            environment: process.env.NODE_ENV || 'development'
         });
     } catch (error) {
+        console.error('Health check failed:', error);
         res.status(500).json({ 
             error: 'Database connection failed',
             connected: false,
-            details: error.message
+            details: error.message,
+            environment: process.env.NODE_ENV || 'development'
         });
     }
 });
 
-// Initialize database
+// Initialize database with better pool management
 app.post('/api/init', async (req, res) => {
     try {
         const dbUrl = process.env.DATABASE_URL || req.body.dbUrl;
 
         if (!dbUrl) {
             return res.status(400).json({ 
-                error: 'Database URL is required'
+                error: 'Database URL is required. Set DATABASE_URL environment variable or provide in request.',
+                hasEnvVar: !!process.env.DATABASE_URL
             });
         }
 
-        if (pool) {
-            await pool.end();
+        console.log('Initializing database connection...');
+        
+        // Create new pool only if needed
+        if (!pool) {
+            pool = initializePool(dbUrl);
+        } else if (pool.ended) {
+            pool = initializePool(dbUrl);
         }
-        pool = initializePool(dbUrl);
 
+        // Test connection
         const client = await pool.connect();
+        console.log('Database connection successful!');
 
         // Create tables
+        console.log('Creating/updating database schema...');
+
         await client.query(`
-            CREATE TABLE IF NOT EXISTS date_configs (
-                date_key DATE PRIMARY KEY,
-                color VARCHAR(7),
-                day_type VARCHAR(1) CHECK (day_type IN ('A', 'B')),
-                is_access BOOLEAN DEFAULT false,
+            CREATE TABLE IF NOT EXISTS day_schedules (
+                date DATE PRIMARY KEY,
+                schedule VARCHAR(1) NOT NULL CHECK (schedule IN ('A', 'B')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS day_types (
+                date DATE PRIMARY KEY,
+                type VARCHAR(50) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -164,129 +214,205 @@ app.post('/api/init', async (req, res) => {
             )
         `);
 
+        // Create indexes
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_events_school_date ON events(school, date)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_materials_school_date_grade ON materials(school, date, grade_level)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_events_date ON events(date)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_materials_date ON materials(date)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_day_schedules_date ON day_schedules(date)`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_day_types_date ON day_types(date)`);
+
+        console.log('Database schema initialized successfully!');
         client.release();
 
         res.json({ 
             message: 'Database initialized successfully',
-            tables: ['date_configs', 'events', 'materials']
+            tables: ['day_schedules', 'day_types', 'events', 'materials'],
+            features: ['password-protected materials', 'multi-school support', 'performance indexes'],
+            environment: process.env.NODE_ENV || 'development',
+            timestamp: new Date().toISOString()
         });
 
     } catch (error) {
+        console.error('Database initialization error:', error);
+        
+        let errorMessage = error.message;
+        let suggestions = [];
+        
+        if (error.code === 'ENOTFOUND') {
+            errorMessage = 'Database host not found. Check your connection string.';
+            suggestions.push('Verify DATABASE_URL is correct');
+        } else if (error.code === 'ECONNREFUSED') {
+            errorMessage = 'Connection refused. Database may not be running.';
+            suggestions.push('Check if database is active');
+        } else if (error.code === '28P01') {
+            errorMessage = 'Authentication failed. Check credentials.';
+            suggestions.push('Verify username and password in DATABASE_URL');
+        } else if (error.code === '3D000') {
+            errorMessage = 'Database does not exist.';
+            suggestions.push('Check database name in connection string');
+        }
+
         res.status(500).json({ 
-            error: error.message
+            error: errorMessage,
+            code: error.code,
+            suggestions,
+            hasEnvVar: !!process.env.DATABASE_URL
         });
     }
 });
 
-// DATE CONFIGS ROUTES
-app.get('/api/date-configs', async (req, res) => {
+// Day Schedules Routes
+app.get('/api/day-schedules', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
-        const client = await pool.connect();
-        const result = await client.query('SELECT date_key, color, day_type, is_access FROM date_configs ORDER BY date_key');
+        const activePool = ensurePoolExists();
+        const client = await activePool.connect();
+        const result = await client.query('SELECT date, schedule FROM day_schedules ORDER BY date');
         client.release();
 
-        const configs = result.rows.map(row => {
-            return {
-                date_key: formatDate(row.date_key),
-                color: row.color,
-                day_type: row.day_type,
-                is_access: row.is_access
-            };
-        });
+        const schedules = result.rows.map(row => ({
+            date: formatDate(row.date),
+            schedule: row.schedule
+        }));
 
-        res.json(configs);
+        res.json(schedules);
     } catch (error) {
+        console.error('Error fetching day schedules:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-app.post('/api/date-configs', async (req, res) => {
+app.post('/api/day-schedules', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
+        const activePool = ensurePoolExists();
+        const { date, schedule } = req.body;
+
+        if (!date) {
+            return res.status(400).json({ error: 'Date is required' });
         }
 
-        const { date_key, color, day_type, is_access } = req.body;
+        const formattedDate = formatDate(date);
+        const client = await activePool.connect();
 
-        if (!date_key) {
-            return res.status(400).json({ error: 'date_key is required' });
+        if (!schedule || schedule === null) {
+            await client.query('DELETE FROM day_schedules WHERE date = $1', [formattedDate]);
+        } else {
+            if (!['A', 'B'].includes(schedule)) {
+                client.release();
+                return res.status(400).json({ error: 'Schedule must be A or B' });
+            }
+
+            await client.query(`
+                INSERT INTO day_schedules (date, schedule, updated_at) 
+                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT (date) 
+                DO UPDATE SET schedule = $2, updated_at = CURRENT_TIMESTAMP
+            `, [formattedDate, schedule]);
         }
-
-        const formattedDate = formatDate(date_key);
-        const client = await pool.connect();
-
-        await client.query(`
-            INSERT INTO date_configs (date_key, color, day_type, is_access, updated_at) 
-            VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-            ON CONFLICT (date_key) 
-            DO UPDATE SET 
-                color = COALESCE($2, date_configs.color),
-                day_type = COALESCE($3, date_configs.day_type),
-                is_access = COALESCE($4, date_configs.is_access),
-                updated_at = CURRENT_TIMESTAMP
-        `, [formattedDate, color || null, day_type || null, is_access || false]);
 
         client.release();
         res.json({ 
             success: true, 
-            date_key: formattedDate, 
-            color: color, 
-            day_type: day_type, 
-            is_access: is_access 
+            date: formattedDate, 
+            schedule: schedule 
         });
     } catch (error) {
+        console.error('Error updating day schedule:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// EVENTS ROUTES
+// Day Types Routes
+app.get('/api/day-types', async (req, res) => {
+    try {
+        const activePool = ensurePoolExists();
+        const client = await activePool.connect();
+        const result = await client.query('SELECT date, type FROM day_types ORDER BY date');
+        client.release();
+
+        const types = result.rows.map(row => ({
+            date: formatDate(row.date),
+            type: row.type
+        }));
+
+        res.json(types);
+    } catch (error) {
+        console.error('Error fetching day types:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/day-types', async (req, res) => {
+    try {
+        const activePool = ensurePoolExists();
+        const { date, type } = req.body;
+
+        if (!date) {
+            return res.status(400).json({ error: 'Date is required' });
+        }
+
+        const formattedDate = formatDate(date);
+        const client = await activePool.connect();
+
+        if (!type || type === null) {
+            await client.query('DELETE FROM day_types WHERE date = $1', [formattedDate]);
+        } else {
+            await client.query(`
+                INSERT INTO day_types (date, type, updated_at) 
+                VALUES ($1, $2, CURRENT_TIMESTAMP)
+                ON CONFLICT (date) 
+                DO UPDATE SET type = $2, updated_at = CURRENT_TIMESTAMP
+            `, [formattedDate, type]);
+        }
+
+        client.release();
+        res.json({ 
+            success: true, 
+            date: formattedDate, 
+            type: type 
+        });
+    } catch (error) {
+        console.error('Error updating day type:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Events Routes
 app.get('/api/events', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { school } = req.query;
 
-        if (!school || !['wlhs', 'wvhs'].includes(school)) {
-            return res.status(400).json({ error: 'Valid school parameter required (wlhs or wvhs)' });
+        if (!school) {
+            return res.status(400).json({ error: 'School parameter is required' });
         }
 
-        const client = await pool.connect();
+        if (!['wlhs', 'wvhs'].includes(school)) {
+            return res.status(400).json({ error: 'School must be wlhs or wvhs' });
+        }
+
+        const client = await activePool.connect();
         const result = await client.query(
-            'SELECT id, school, date, title, department, time, description FROM events WHERE school = $1 ORDER BY date, time, id',
+            'SELECT id, school, date, title, department, time, description, created_at, updated_at FROM events WHERE school = $1 ORDER BY date, time, id',
             [school]
         );
         client.release();
 
-        const events = result.rows.map(row => {
-            return {
-                id: row.id,
-                school: row.school,
-                date: formatDate(row.date),
-                title: row.title,
-                department: row.department,
-                time: row.time,
-                description: row.description
-            };
-        });
+        const events = result.rows.map(row => ({
+            ...row,
+            date: formatDate(row.date)
+        }));
 
         res.json(events);
     } catch (error) {
+        console.error('Error fetching events:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/events', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { school, date, title, department, time, description } = req.body;
 
         if (!school || !date || !title) {
@@ -298,38 +424,31 @@ app.post('/api/events', async (req, res) => {
         }
 
         const formattedDate = formatDate(date);
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
         const result = await client.query(`
             INSERT INTO events (school, date, title, department, time, description)
             VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, school, date, title, department, time, description
+            RETURNING id, school, date, title, department, time, description, created_at, updated_at
         `, [school, formattedDate, title, department || null, time || null, description || '']);
 
         client.release();
 
         const event = {
-            id: result.rows[0].id,
-            school: result.rows[0].school,
-            date: formatDate(result.rows[0].date),
-            title: result.rows[0].title,
-            department: result.rows[0].department,
-            time: result.rows[0].time,
-            description: result.rows[0].description
+            ...result.rows[0],
+            date: formatDate(result.rows[0].date)
         };
 
         res.json(event);
     } catch (error) {
+        console.error('Error creating event:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.put('/api/events/:id', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { id } = req.params;
         const { title, department, time, description } = req.body;
 
@@ -337,13 +456,13 @@ app.put('/api/events/:id', async (req, res) => {
             return res.status(400).json({ error: 'Title is required' });
         }
 
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
         const result = await client.query(`
             UPDATE events 
             SET title = $1, department = $2, time = $3, description = $4, updated_at = CURRENT_TIMESTAMP
             WHERE id = $5
-            RETURNING id, school, date, title, department, time, description
+            RETURNING id, school, date, title, department, time, description, created_at, updated_at
         `, [title, department || null, time || null, description || '', id]);
 
         client.release();
@@ -353,29 +472,22 @@ app.put('/api/events/:id', async (req, res) => {
         }
 
         const event = {
-            id: result.rows[0].id,
-            school: result.rows[0].school,
-            date: formatDate(result.rows[0].date),
-            title: result.rows[0].title,
-            department: result.rows[0].department,
-            time: result.rows[0].time,
-            description: result.rows[0].description
+            ...result.rows[0],
+            date: formatDate(result.rows[0].date)
         };
 
         res.json(event);
     } catch (error) {
+        console.error('Error updating event:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.delete('/api/events/:id', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { id } = req.params;
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
         const result = await client.query('DELETE FROM events WHERE id = $1 RETURNING id', [id]);
         client.release();
@@ -386,55 +498,68 @@ app.delete('/api/events/:id', async (req, res) => {
 
         res.json({ success: true, id: parseInt(id) });
     } catch (error) {
+        console.error('Error deleting event:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// MATERIALS ROUTES
+// Materials Routes
 app.get('/api/materials', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { school } = req.query;
 
-        if (!school || !['wlhs', 'wvhs'].includes(school)) {
-            return res.status(400).json({ error: 'Valid school parameter required (wlhs or wvhs)' });
+        if (!school) {
+            return res.status(400).json({ error: 'School parameter is required' });
         }
 
-        const client = await pool.connect();
-        const result = await client.query(
-            'SELECT id, school, date, grade_level, title, link, description, password FROM materials WHERE school = $1 ORDER BY date, grade_level, id',
-            [school]
-        );
-        client.release();
+        if (!['wlhs', 'wvhs'].includes(school)) {
+            return res.status(400).json({ error: 'School must be wlhs or wvhs' });
+        }
 
-        const materials = result.rows.map(row => {
-            return {
-                id: row.id,
-                school: row.school,
+        const client = await activePool.connect();
+
+        try {
+            const result = await client.query(
+                'SELECT id, school, date, grade_level, title, link, description, password, created_at, updated_at FROM materials WHERE school = $1 ORDER BY date, grade_level, id',
+                [school]
+            );
+            
+            client.release();
+
+            const materials = result.rows.map(row => ({
+                ...row,
                 date: formatDate(row.date),
-                grade_level: row.grade_level,
-                title: row.title,
-                link: row.link,
-                description: row.description,
                 password: row.password || ''
-            };
-        });
+            }));
 
-        res.json(materials);
+            res.json(materials);
+        } catch (passwordError) {
+            // If password column doesn't exist, try without it
+            const result = await client.query(
+                'SELECT id, school, date, grade_level, title, link, description, created_at, updated_at FROM materials WHERE school = $1 ORDER BY date, grade_level, id',
+                [school]
+            );
+            
+            client.release();
+
+            const materials = result.rows.map(row => ({
+                ...row,
+                date: formatDate(row.date),
+                password: ''
+            }));
+
+            res.json(materials);
+        }
     } catch (error) {
+        console.error('Error fetching materials:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.post('/api/materials', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { school, date, grade_level, title, link, description, password } = req.body;
 
         if (!school || !date || !grade_level || !title || !link) {
@@ -450,39 +575,50 @@ app.post('/api/materials', async (req, res) => {
         }
 
         const formattedDate = formatDate(date);
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
-        const result = await client.query(`
-            INSERT INTO materials (school, date, grade_level, title, link, description, password)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, school, date, grade_level, title, link, description, password
-        `, [school, formattedDate, parseInt(grade_level), title, link, description || '', password || '']);
+        try {
+            const result = await client.query(`
+                INSERT INTO materials (school, date, grade_level, title, link, description, password)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id, school, date, grade_level, title, link, description, password, created_at, updated_at
+            `, [school, formattedDate, parseInt(grade_level), title, link, description || '', password || '']);
 
-        client.release();
+            client.release();
 
-        const material = {
-            id: result.rows[0].id,
-            school: result.rows[0].school,
-            date: formatDate(result.rows[0].date),
-            grade_level: result.rows[0].grade_level,
-            title: result.rows[0].title,
-            link: result.rows[0].link,
-            description: result.rows[0].description,
-            password: result.rows[0].password
-        };
+            const material = {
+                ...result.rows[0],
+                date: formatDate(result.rows[0].date)
+            };
 
-        res.json(material);
+            res.json(material);
+        } catch (passwordError) {
+            // If password column doesn't exist, create without it
+            const result = await client.query(`
+                INSERT INTO materials (school, date, grade_level, title, link, description)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING id, school, date, grade_level, title, link, description, created_at, updated_at
+            `, [school, formattedDate, parseInt(grade_level), title, link, description || '']);
+
+            client.release();
+
+            const material = {
+                ...result.rows[0],
+                date: formatDate(result.rows[0].date),
+                password: ''
+            };
+
+            res.json(material);
+        }
     } catch (error) {
+        console.error('Error creating material:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.put('/api/materials/:id', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { id } = req.params;
         const { title, link, description, password } = req.body;
 
@@ -490,46 +626,62 @@ app.put('/api/materials/:id', async (req, res) => {
             return res.status(400).json({ error: 'Title and link are required' });
         }
 
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
-        const result = await client.query(`
-            UPDATE materials 
-            SET title = $1, link = $2, description = $3, password = $4, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $5
-            RETURNING id, school, date, grade_level, title, link, description, password
-        `, [title, link, description || '', password || '', id]);
+        try {
+            const result = await client.query(`
+                UPDATE materials 
+                SET title = $1, link = $2, description = $3, password = $4, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $5
+                RETURNING id, school, date, grade_level, title, link, description, password, created_at, updated_at
+            `, [title, link, description || '', password || '', id]);
 
-        client.release();
+            client.release();
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Material not found' });
+            if (result.rows.length === 0) {
+                return res.status(404).json({ error: 'Material not found' });
+            }
+
+            const material = {
+                ...result.rows[0],
+                date: formatDate(result.rows[0].date)
+            };
+
+            res.json(material);
+        } catch (passwordError) {
+            // If password column doesn't exist, update without it
+            const result = await client.query(`
+                UPDATE materials 
+                SET title = $1, link = $2, description = $3, updated_at = CURRENT_TIMESTAMP
+                WHERE id = $4
+                RETURNING id, school, date, grade_level, title, link, description, created_at, updated_at
+            `, [title, link, description || '', id]);
+
+            client.release();
+
+            if (result.rows.length === 0) {
+                return res.status(404).json({ error: 'Material not found' });
+            }
+
+            const material = {
+                ...result.rows[0],
+                date: formatDate(result.rows[0].date),
+                password: ''
+            };
+
+            res.json(material);
         }
-
-        const material = {
-            id: result.rows[0].id,
-            school: result.rows[0].school,
-            date: formatDate(result.rows[0].date),
-            grade_level: result.rows[0].grade_level,
-            title: result.rows[0].title,
-            link: result.rows[0].link,
-            description: result.rows[0].description,
-            password: result.rows[0].password
-        };
-
-        res.json(material);
     } catch (error) {
+        console.error('Error updating material:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
 app.delete('/api/materials/:id', async (req, res) => {
     try {
-        if (!pool) {
-            return res.status(500).json({ error: 'Database not connected' });
-        }
-
+        const activePool = ensurePoolExists();
         const { id } = req.params;
-        const client = await pool.connect();
+        const client = await activePool.connect();
 
         const result = await client.query('DELETE FROM materials WHERE id = $1 RETURNING id', [id]);
         client.release();
@@ -540,11 +692,32 @@ app.delete('/api/materials/:id', async (req, res) => {
 
         res.json({ success: true, id: parseInt(id) });
     } catch (error) {
+        console.error('Error deleting material:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Error handling
+// Admin Routes
+app.delete('/api/clear-all', async (req, res) => {
+    try {
+        const activePool = ensurePoolExists();
+        const client = await activePool.connect();
+
+        await client.query('DELETE FROM materials');
+        await client.query('DELETE FROM events');
+        await client.query('DELETE FROM day_schedules');
+        await client.query('DELETE FROM day_types');
+
+        client.release();
+
+        res.json({ success: true, message: 'All data cleared' });
+    } catch (error) {
+        console.error('Error clearing data:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Error handling middleware
 app.use((err, req, res, next) => {
     console.error('Unhandled error:', err);
     res.status(500).json({ 
@@ -556,40 +729,65 @@ app.use((err, req, res, next) => {
 // 404 handler
 app.use((req, res) => {
     res.status(404).json({ 
-        error: 'Endpoint not found',
+        error: 'Not found',
         path: req.path,
-        method: req.method,
-        timestamp: new Date().toISOString(),
-        availableEndpoints: [
-            'GET /',
-            'GET /api/health',
-            'POST /api/init',
-            'GET /api/date-configs',
-            'POST /api/date-configs',
-            'GET /api/events?school={wlhs|wvhs}',
-            'POST /api/events',
-            'PUT /api/events/:id',
-            'DELETE /api/events/:id',
-            'GET /api/materials?school={wlhs|wvhs}',
-            'POST /api/materials',
-            'PUT /api/materials/:id',
-            'DELETE /api/materials/:id'
-        ]
+        method: req.method
     });
 });
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-    if (pool) {
-        await pool.end();
+let server;
+
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully');
+    if (server) {
+        server.close(() => {
+            console.log('HTTP server closed');
+            if (pool && !pool.ended) {
+                pool.end().then(() => {
+                    console.log('Database pool closed');
+                    process.exit(0);
+                }).catch(err => {
+                    console.error('Error closing pool:', err);
+                    process.exit(1);
+                });
+            } else {
+                process.exit(0);
+            }
+        });
+    } else {
+        process.exit(0);
     }
-    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down gracefully');
+    if (server) {
+        server.close(() => {
+            console.log('HTTP server closed');
+            if (pool && !pool.ended) {
+                pool.end().then(() => {
+                    console.log('Database pool closed');
+                    process.exit(0);
+                }).catch(err => {
+                    console.error('Error closing pool:', err);
+                    process.exit(1);
+                });
+            } else {
+                process.exit(0);
+            }
+        });
+    } else {
+        process.exit(0);
+    }
 });
 
 // Start server
-const server = app.listen(PORT, () => {
+server = app.listen(PORT, () => {
     console.log(`🚀 WLWV Calendar API running on port ${PORT}`);
-    console.log(`📅 Date configs: /api/date-configs`);
+    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`💾 Database: ${pool ? 'Connected' : 'Not configured'}`);
+    console.log(`🌐 Health check: /api/health`);
 });
 
 module.exports = app;
